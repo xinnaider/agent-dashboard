@@ -44,7 +44,6 @@ pub struct Session {
     pub effort: Option<String>,
     pub last_activity: Option<String>,
     pub started_at: u64,
-    pub jsonl_path: PathBuf,
     pub last_file_size: u64,
 }
 
@@ -318,6 +317,8 @@ fn parse_jsonl(
                         model_val = Some(m);
                     }
                     if let Some(usage) = msg.usage {
+                        // Claude API reports cumulative context snapshot per request, not per-turn delta.
+                        // Use assignment (=) not accumulation (+=); last entry holds the running total.
                         total_input = usage.input_tokens
                             + usage.cache_creation_input_tokens
                             + usage.cache_read_input_tokens;
@@ -354,7 +355,7 @@ fn parse_jsonl(
                             .filter(|s| !s.is_empty());
                         (&remainder[..wp], eff)
                     } else {
-                        (&remainder[..], None)
+                        (remainder, None)
                     };
                     if let Some(e) = new_effort {
                         effort = Some(e);
@@ -504,10 +505,10 @@ fn decode_project_path(project_dir: &Path) -> String {
         let drive = &name[0..1];
         let rest = &name[3..];
         format!("{}:/{}", drive, rest.replace('-', "/"))
-    } else if name.starts_with("--") {
-        format!("/{}", name[2..].replace('-', "/"))
-    } else if name.starts_with('-') {
-        name.replacen('-', "/", 1).replace('-', "/")
+    } else if let Some(stripped) = name.strip_prefix("--") {
+        format!("/{}", stripped.replace('-', "/"))
+    } else if let Some(stripped) = name.strip_prefix('-') {
+        format!("/{}", stripped)
     } else {
         name
     }
@@ -528,11 +529,7 @@ fn determine_status(path: &Path, input_tokens: u64, output_tokens: u64) -> Sessi
     let file_size = file.metadata().map(|m| m.len()).unwrap_or(0);
     let mut reader = BufReader::new(file);
 
-    let seek_pos = if file_size > 8192 {
-        file_size - 8192
-    } else {
-        0
-    };
+    let seek_pos = file_size.saturating_sub(8192);
     let _ = reader.seek(SeekFrom::Start(seek_pos));
 
     let mut last_type = String::new();
@@ -555,11 +552,7 @@ fn determine_status(path: &Path, input_tokens: u64, output_tokens: u64) -> Sessi
 
         if trimmed.contains("\"type\":\"assistant\"") {
             last_type = "assistant".to_string();
-            if trimmed.contains("\"type\":\"tool_use\"") {
-                has_tool_use_permission = true;
-            } else {
-                has_tool_use_permission = false;
-            }
+            has_tool_use_permission = trimmed.contains("\"type\":\"tool_use\"");
         } else if trimmed.contains("\"type\":\"user\"") {
             last_type = "user".to_string();
             has_tool_use_permission = false;
@@ -691,7 +684,6 @@ pub fn discover_sessions(prev_sessions: &HashMap<String, Session>) -> Vec<Sessio
                 pid: Some(live.pid),
                 last_activity: info.last_activity,
                 started_at: live.started_at,
-                jsonl_path: path,
                 last_file_size: info.file_size,
             });
         }
@@ -702,7 +694,7 @@ pub fn discover_sessions(prev_sessions: &HashMap<String, Session>) -> Vec<Sessio
         .filter_map(|s| s.pid)
         .collect();
 
-    for (_session_id_key, live) in &live_map {
+    for live in live_map.values() {
         if known_pids.contains(&live.pid) {
             continue;
         }
@@ -721,7 +713,6 @@ pub fn discover_sessions(prev_sessions: &HashMap<String, Session>) -> Vec<Sessio
             pid: Some(live.pid),
             last_activity: None,
             started_at: live.started_at,
-            jsonl_path: PathBuf::new(),
             last_file_size: 0,
         });
     }
@@ -763,7 +754,7 @@ mod tests {
             pid: None,
             last_activity: None,
             started_at: 0,
-            jsonl_path: PathBuf::new(),
+
             last_file_size: 0,
         };
         assert_eq!(session.token_display(), "50k / 1M");
@@ -785,7 +776,7 @@ mod tests {
             pid: None,
             last_activity: None,
             started_at: 0,
-            jsonl_path: PathBuf::new(),
+
             last_file_size: 0,
         };
         assert!((session.token_ratio() - 1.0).abs() < 0.01);
@@ -854,7 +845,7 @@ mod tests {
             pid: None,
             last_activity: None,
             started_at: 0,
-            jsonl_path: PathBuf::new(),
+
             last_file_size: 0,
         };
         assert_eq!(session.room_id(), "myapp \u{203a} tools/cli");

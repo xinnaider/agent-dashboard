@@ -23,6 +23,12 @@ pub struct App {
     prev_sessions: HashMap<String, Session>,
 }
 
+impl Default for App {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl App {
     pub fn new() -> Self {
         App {

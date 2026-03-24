@@ -15,7 +15,7 @@ use crate::session::{Session, SessionStatus};
 const ROOMS_PER_PAGE: usize = 4;
 const SPRITE_W: usize = 10;
 const SPRITE_H: usize = 10;
-const SPRITE_RENDER_H: u16 = (SPRITE_H as u16 + 1) / 2;
+const SPRITE_RENDER_H: u16 = (SPRITE_H as u16).div_ceil(2);
 const CHAR_WIDTH: u16 = (SPRITE_W as u16) + 4;
 const CHAR_LABEL_LINES: u16 = 4;
 const CHAR_HEIGHT: u16 = SPRITE_RENDER_H + CHAR_LABEL_LINES;
@@ -94,8 +94,7 @@ fn render_sprite_lines(sprite: &Sprite, palette: Palette) -> Vec<Line<'static>> 
     let mut lines = Vec::new();
     for y in (0..SPRITE_H).step_by(2) {
         let mut spans: Vec<Span<'static>> = Vec::new();
-        for x in 0..SPRITE_W {
-            let top = sprite[y][x];
+        for (x, &top) in sprite[y].iter().enumerate().take(SPRITE_W) {
             let bot = if y + 1 < SPRITE_H { sprite[y + 1][x] } else { 0 };
             if top == 0 && bot == 0 {
                 spans.push(Span::raw(" "));
@@ -183,7 +182,7 @@ fn context_bar(ratio: f64) -> (String, Color) {
 
 pub fn resolve_zoom(app: &mut App) {
     let rooms = group_into_rooms(&app.sessions);
-    let total_pages = (rooms.len() + ROOMS_PER_PAGE - 1) / ROOMS_PER_PAGE;
+    let total_pages = rooms.len().div_ceil(ROOMS_PER_PAGE);
     if total_pages > 0 {
         app.view_page = app.view_page.min(total_pages - 1);
     } else {
@@ -224,7 +223,7 @@ fn render_rooms(frame: &mut Frame, app: &App, area: Rect) {
             return;
         }
     }
-    let total_pages = (rooms.len() + ROOMS_PER_PAGE - 1) / ROOMS_PER_PAGE;
+    let total_pages = rooms.len().div_ceil(ROOMS_PER_PAGE);
     let page = app.view_page.min(total_pages.saturating_sub(1));
     let page_start = page * ROOMS_PER_PAGE;
     let page_rooms: Vec<&Room> = rooms.iter().skip(page_start).take(ROOMS_PER_PAGE).collect();
@@ -244,7 +243,7 @@ fn render_rooms(frame: &mut Frame, app: &App, area: Rect) {
 
 fn render_room(frame: &mut Frame, app: &App, room: &Room, area: Rect, slot_num: Option<usize>, selected_agent: Option<usize>) {
     let border_color = if room.has_input {
-        if app.tick % 2 == 0 { Color::Yellow } else { Color::White }
+        if app.tick.is_multiple_of(2) { Color::Yellow } else { Color::White }
     } else {
         Color::DarkGray
     };
@@ -288,7 +287,7 @@ fn render_character(frame: &mut Frame, session: &Session, area: Rect, tick: u64,
     let (sprite, palette) = sprite_data(&session.status, anim_frame);
     let ratio = session.token_ratio();
     let color = if session.status == SessionStatus::Input {
-        if tick % 2 == 0 { Color::Yellow } else { Color::White }
+        if tick.is_multiple_of(2) { Color::Yellow } else { Color::White }
     } else {
         status_color(&session.status)
     };
@@ -327,7 +326,7 @@ fn render_empty(frame: &mut Frame, area: Rect, _tick: u64) {
 
 fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
     let rooms = group_into_rooms(&app.sessions);
-    let total_pages = (rooms.len() + ROOMS_PER_PAGE - 1) / ROOMS_PER_PAGE;
+    let total_pages = rooms.len().div_ceil(ROOMS_PER_PAGE);
     let page = app.view_page.min(total_pages.saturating_sub(1));
     let mut spans = vec![];
     if app.view_zoomed_room.is_some() {
@@ -366,7 +365,6 @@ fn truncate_str(s: &str, max_width: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
 
     fn make_session(cwd: &str, status: SessionStatus, last_activity: Option<&str>) -> Session {
         Session {
@@ -383,7 +381,6 @@ mod tests {
             pid: None,
             last_activity: last_activity.map(|s| s.to_string()),
             started_at: 0,
-            jsonl_path: PathBuf::new(),
             last_file_size: 0,
         }
     }

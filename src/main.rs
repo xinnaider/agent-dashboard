@@ -1,6 +1,8 @@
+mod app;
 mod cli;
 mod model;
 mod session;
+mod ui;
 
 use clap::Parser;
 use cli::{Cli, Command};

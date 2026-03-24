@@ -321,12 +321,33 @@ const SPRITE_DRAGON_INPUT: [Sprite; 3] = [
      [0,0,0,0,0,0,0,0,0,0]],
 ];
 
-fn sprite_data(status: &SessionStatus, frame: usize) -> (&'static Sprite, Palette) {
+fn sprite_data(status: &SessionStatus, frame: usize, pet: usize) -> (&'static Sprite, Palette) {
     match status {
         SessionStatus::New => (&SPRITE_EGG[0], PAL_EGG),
-        SessionStatus::Working => (&SPRITE_WORKING[frame % 3], PAL_WORKING),
-        SessionStatus::Idle => (&SPRITE_IDLE[0], PAL_IDLE),
-        SessionStatus::Input => (&SPRITE_INPUT[frame % 3], PAL_INPUT),
+        SessionStatus::Working => match pet {
+            1 => (&SPRITE_CAT_WORKING[frame % 3], PAL_CAT_WORKING),
+            2 => (&SPRITE_ROBOT_WORKING[frame % 3], PAL_ROBOT_WORKING),
+            3 => (&SPRITE_GHOST_WORKING[frame % 3], PAL_GHOST_WORKING),
+            4 => (&SPRITE_SLIME_WORKING[frame % 3], PAL_SLIME_WORKING),
+            5 => (&SPRITE_DRAGON_WORKING[frame % 3], PAL_DRAGON_WORKING),
+            _ => (&SPRITE_WORKING[frame % 3], PAL_WORKING),
+        },
+        SessionStatus::Idle => match pet {
+            1 => (&SPRITE_CAT_IDLE[0], PAL_CAT_IDLE),
+            2 => (&SPRITE_ROBOT_IDLE[0], PAL_ROBOT_IDLE),
+            3 => (&SPRITE_GHOST_IDLE[0], PAL_GHOST_IDLE),
+            4 => (&SPRITE_SLIME_IDLE[0], PAL_SLIME_IDLE),
+            5 => (&SPRITE_DRAGON_IDLE[0], PAL_DRAGON_IDLE),
+            _ => (&SPRITE_IDLE[0], PAL_IDLE),
+        },
+        SessionStatus::Input => match pet {
+            1 => (&SPRITE_CAT_INPUT[frame % 3], PAL_CAT_INPUT),
+            2 => (&SPRITE_ROBOT_INPUT[frame % 3], PAL_ROBOT_INPUT),
+            3 => (&SPRITE_GHOST_INPUT[frame % 3], PAL_GHOST_INPUT),
+            4 => (&SPRITE_SLIME_INPUT[frame % 3], PAL_SLIME_INPUT),
+            5 => (&SPRITE_DRAGON_INPUT[frame % 3], PAL_DRAGON_INPUT),
+            _ => (&SPRITE_INPUT[frame % 3], PAL_INPUT),
+        },
     }
 }
 
@@ -528,7 +549,8 @@ fn render_character(frame: &mut Frame, session: &Session, area: Rect, tick: u64,
     if area.height < 3 || area.width < 4 { return; }
     let offset = session_phase_offset(&session.session_id);
     let anim_frame = animation_frame(&session.status, tick + offset);
-    let (sprite, palette) = sprite_data(&session.status, anim_frame);
+    let pet = pet_type(&session.session_id);
+    let (sprite, palette) = sprite_data(&session.status, anim_frame, pet);
     let ratio = session.token_ratio();
     let color = if session.status == SessionStatus::Input {
         if tick.is_multiple_of(2) { Color::Yellow } else { Color::White }
@@ -558,7 +580,7 @@ fn render_character(frame: &mut Frame, session: &Session, area: Rect, tick: u64,
 }
 
 fn render_empty(frame: &mut Frame, area: Rect, _tick: u64) {
-    let (sprite, palette) = sprite_data(&SessionStatus::Idle, 0);
+    let (sprite, palette) = sprite_data(&SessionStatus::Idle, 0, 0);
     let mut lines: Vec<Line> = Vec::new();
     lines.push(Line::from(""));
     lines.extend(render_sprite_lines(sprite, palette));
@@ -746,5 +768,31 @@ mod tests {
         let ids = ["a","b","c","d","e","f","g","h","i","j","k","l"];
         let types: std::collections::HashSet<usize> = ids.iter().map(|id| pet_type(id)).collect();
         assert!(types.len() >= 2);
+    }
+
+    #[test]
+    fn sprite_data_returns_egg_for_new_regardless_of_pet() {
+        // All pets show egg when status is New — pet param ignored
+        for pet in 0..6 {
+            let (sprite, _pal) = sprite_data(&SessionStatus::New, 0, pet);
+            // Egg sprite has empty bottom row — stable property
+            assert_eq!(sprite[9], [0u8; 10]);
+        }
+    }
+
+    #[test]
+    fn sprite_data_different_pets_return_different_palettes_for_idle() {
+        let (_, pal0) = sprite_data(&SessionStatus::Idle, 0, 0);
+        let (_, pal1) = sprite_data(&SessionStatus::Idle, 0, 1);
+        // Frog and Cat palettes have different body colors
+        assert_ne!(pal0[1], pal1[1]);
+    }
+
+    #[test]
+    fn sprite_data_out_of_range_pet_falls_back_to_frog() {
+        // pet >= 6 falls back to Frog (original sprites) via `_ =>` arm
+        let (_, pal_out) = sprite_data(&SessionStatus::Idle, 0, 99);
+        let (_, pal_frog) = sprite_data(&SessionStatus::Idle, 0, 0);
+        assert_eq!(pal_out[1], pal_frog[1]);
     }
 }

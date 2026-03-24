@@ -435,6 +435,18 @@ fn status_color(status: &SessionStatus) -> Color {
     }
 }
 
+fn action_or_label(session: &Session) -> String {
+    match session.status {
+        SessionStatus::Working | SessionStatus::Input => {
+            if let Some(ref action) = session.last_action {
+                return action.clone();
+            }
+            session.status.label().to_string()
+        }
+        _ => session.status.label().to_string(),
+    }
+}
+
 fn context_bar(ratio: f64) -> (String, Color) {
     let bar_width = 6usize;
     let filled = (ratio * bar_width as f64).round().min(bar_width as f64) as usize;
@@ -572,7 +584,7 @@ fn render_character(frame: &mut Frame, session: &Session, area: Rect, tick: u64,
     lines.push(Line::from(Span::styled(truncate_str(&name, area.width as usize), name_style)));
     let branch = session.branch.as_deref().unwrap_or("");
     lines.push(Line::from(Span::styled(truncate_str(branch, area.width as usize), Style::default().fg(Color::Green))));
-    lines.push(Line::from(Span::styled(session.status.label(), Style::default().fg(color))));
+    lines.push(Line::from(Span::styled(truncate_str(&action_or_label(session), area.width as usize), Style::default().fg(color))));
     let (bar_str, bar_color) = context_bar(ratio);
     lines.push(Line::from(Span::styled(truncate_str(&bar_str, area.width as usize), Style::default().fg(bar_color))));
     let paragraph = Paragraph::new(lines).alignment(Alignment::Center);
@@ -650,6 +662,28 @@ mod tests {
             started_at: 0,
             last_file_size: 0,
         }
+    }
+
+    #[test]
+    fn status_label_shows_action_when_working_with_action() {
+        // When Working + last_action present, show action
+        let mut s = make_session("/a", SessionStatus::Working, Some("2026-03-24T10:00:00Z"));
+        s.last_action = Some("Edit main.rs".to_string());
+        assert_eq!(action_or_label(&s), "Edit main.rs");
+    }
+
+    #[test]
+    fn status_label_shows_working_when_no_action() {
+        let s = make_session("/a", SessionStatus::Working, Some("2026-03-24T10:00:00Z"));
+        assert_eq!(action_or_label(&s), "Working");
+    }
+
+    #[test]
+    fn status_label_shows_idle_label_even_with_action() {
+        // Idle sessions never show action
+        let mut s = make_session("/a", SessionStatus::Idle, Some("2026-03-24T10:00:00Z"));
+        s.last_action = Some("Edit main.rs".to_string());
+        assert_eq!(action_or_label(&s), "Idle");
     }
 
     #[test]

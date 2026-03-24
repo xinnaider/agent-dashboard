@@ -530,7 +530,7 @@ pub(crate) fn extract_tool_action(line: &str) -> Option<String> {
     };
     // Try file_path first
     if let Some(path) = extract_str_value(line, "\"file_path\":\"") {
-        let basename = path.rsplit('/').next().unwrap_or(&path).to_string();
+        let basename = path.rsplit(&['/', '\\'][..]).next().unwrap_or(&path).to_string();
         return Some(format!("{} {}", name, basename));
     }
     // Try command

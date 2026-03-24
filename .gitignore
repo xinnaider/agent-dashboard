@@ -7,3 +7,5 @@ Thumbs.db
 *.swp
 *.swo
 *.stackdump
+.claude/plan
+.claude/settings.local.json

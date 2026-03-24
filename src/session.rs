@@ -102,6 +102,30 @@ struct LiveSessionInfo {
     started_at: u64,
 }
 
+/// Get all PIDs of running Claude Code CLI processes (not desktop app).
+/// Single PowerShell call instead of one per PID.
+fn get_claude_cli_pids() -> std::collections::HashSet<i32> {
+    let output = ProcessCommand::new("powershell")
+        .args([
+            "-NoProfile",
+            "-Command",
+            "Get-Process claude -ErrorAction SilentlyContinue | Where-Object {$_.Path -like '*\\.local\\*'} | Select-Object -ExpandProperty Id",
+        ])
+        .output();
+
+    let mut pids = std::collections::HashSet::new();
+    if let Ok(o) = output {
+        if o.status.success() {
+            for line in String::from_utf8_lossy(&o.stdout).lines() {
+                if let Ok(pid) = line.trim().parse::<i32>() {
+                    pids.insert(pid);
+                }
+            }
+        }
+    }
+    pids
+}
+
 fn build_live_session_map() -> HashMap<String, LiveSessionInfo> {
     let session_dir = match dirs::home_dir() {
         Some(h) => h.join(".claude").join("sessions"),
@@ -114,6 +138,9 @@ fn build_live_session_map() -> HashMap<String, LiveSessionInfo> {
         Ok(e) => e,
         Err(_) => return map,
     };
+
+    // Get all Claude CLI PIDs in a single batch call
+    let claude_cli_pids = get_claude_cli_pids();
 
     for entry in entries.flatten() {
         let path = entry.path();
@@ -131,7 +158,7 @@ fn build_live_session_map() -> HashMap<String, LiveSessionInfo> {
             Err(_) => continue,
         };
 
-        if !is_claude_cli_process(pid) {
+        if !claude_cli_pids.contains(&pid) {
             continue;
         }
 
@@ -160,27 +187,6 @@ fn build_live_session_map() -> HashMap<String, LiveSessionInfo> {
     }
 
     map
-}
-
-fn is_claude_cli_process(pid: i32) -> bool {
-    let output = ProcessCommand::new("powershell")
-        .args([
-            "-NoProfile",
-            "-Command",
-            &format!(
-                "Get-Process -Id {} -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Path",
-                pid
-            ),
-        ])
-        .output();
-
-    match output {
-        Ok(o) if o.status.success() => {
-            let path = String::from_utf8_lossy(&o.stdout).trim().to_lowercase();
-            path.contains(".local") && path.contains("claude")
-        }
-        _ => false,
-    }
 }
 
 // ── JSONL Parsing ────────────────────────────────────────────────────

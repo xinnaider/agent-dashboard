@@ -43,6 +43,7 @@ pub struct Session {
     pub pid: Option<i32>,
     pub effort: Option<String>,
     pub last_activity: Option<String>,
+    pub last_action: Option<String>,
     pub started_at: u64,
     pub last_file_size: u64,
 }
@@ -516,14 +517,69 @@ fn decode_project_path(project_dir: &Path) -> String {
 
 // ── Status Detection ─────────────────────────────────────────────────
 
-fn determine_status(path: &Path, input_tokens: u64, output_tokens: u64) -> SessionStatus {
+pub(crate) fn extract_tool_action(line: &str) -> Option<String> {
+    if !line.contains("\"type\":\"tool_use\"") {
+        return None;
+    }
+    // Extract tool name
+    let name = {
+        let marker = "\"name\":\"";
+        let start = line.find(marker)? + marker.len();
+        let end = line[start..].find('"')? + start;
+        &line[start..end]
+    };
+    // Try file_path first
+    if let Some(path) = extract_str_value(line, "\"file_path\":\"") {
+        let basename = path.rsplit('/').next().unwrap_or(&path).to_string();
+        return Some(format!("{} {}", name, basename));
+    }
+    // Try command
+    if let Some(cmd) = extract_str_value(line, "\"command\":\"") {
+        let truncated = truncate_arg(&cmd, 17);
+        return Some(format!("{}: {}", name, truncated));
+    }
+    // Try pattern
+    if let Some(pat) = extract_str_value(line, "\"pattern\":\"") {
+        let truncated = truncate_arg(&pat, 17);
+        return Some(format!("{}: {}", name, truncated));
+    }
+    // Fallback: just tool name
+    Some(name.to_string())
+}
+
+fn extract_str_value(line: &str, marker: &str) -> Option<String> {
+    let start = line.find(marker)? + marker.len();
+    // Handle JSON escape sequences minimally — find closing unescaped quote
+    let rest = &line[start..];
+    let mut result = String::new();
+    let mut chars = rest.chars().peekable();
+    loop {
+        match chars.next()? {
+            '"' => break,
+            '\\' => { chars.next(); } // skip escaped char
+            c => result.push(c),
+        }
+    }
+    Some(result)
+}
+
+fn truncate_arg(s: &str, max: usize) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    if chars.len() <= max {
+        s.to_string()
+    } else {
+        chars[..max].iter().collect()
+    }
+}
+
+fn determine_status(path: &Path, input_tokens: u64, output_tokens: u64) -> (SessionStatus, Option<String>) {
     if input_tokens == 0 && output_tokens == 0 {
-        return SessionStatus::New;
+        return (SessionStatus::New, None);
     }
 
     let file = match fs::File::open(path) {
         Ok(f) => f,
-        Err(_) => return SessionStatus::Idle,
+        Err(_) => return (SessionStatus::Idle, None),
     };
 
     let file_size = file.metadata().map(|m| m.len()).unwrap_or(0);
@@ -535,6 +591,7 @@ fn determine_status(path: &Path, input_tokens: u64, output_tokens: u64) -> Sessi
     let mut last_type = String::new();
     let mut last_timestamp = String::new();
     let mut has_tool_use_permission = false;
+    let mut last_action: Option<String> = None;
 
     let mut line = String::new();
     loop {
@@ -561,6 +618,10 @@ fn determine_status(path: &Path, input_tokens: u64, output_tokens: u64) -> Sessi
             has_tool_use_permission = false;
         }
 
+        if trimmed.contains("\"type\":\"tool_use\"") {
+            last_action = extract_tool_action(trimmed);
+        }
+
         if let Some(ts_start) = trimmed.find("\"timestamp\":\"") {
             let after = &trimmed[ts_start + 13..];
             if let Some(ts_end) = after.find('"') {
@@ -570,23 +631,23 @@ fn determine_status(path: &Path, input_tokens: u64, output_tokens: u64) -> Sessi
     }
 
     if last_type == "assistant" && has_tool_use_permission {
-        return SessionStatus::Input;
+        return (SessionStatus::Input, last_action);
     }
 
     if !last_timestamp.is_empty() {
         if let Ok(dt) = last_timestamp.parse::<chrono::DateTime<chrono::Utc>>() {
             let elapsed = chrono::Utc::now() - dt;
             if elapsed.num_seconds() < 30 {
-                return SessionStatus::Working;
+                return (SessionStatus::Working, last_action.clone());
             }
         }
     }
 
     if last_type == "progress" {
-        return SessionStatus::Working;
+        return (SessionStatus::Working, last_action.clone());
     }
 
-    SessionStatus::Idle
+    (SessionStatus::Idle, last_action)
 }
 
 fn truncate_to_minute(ts: &Option<String>) -> Option<String> {
@@ -666,7 +727,7 @@ pub fn discover_sessions(prev_sessions: &HashMap<String, Session>) -> Vec<Sessio
                 .unwrap_or_else(|| decode_project_path(&project_dir));
             let (project_name, relative_dir, branch) = git_project_info(&cwd);
 
-            let status = determine_status(&path, info.input_tokens, info.output_tokens);
+            let (status, last_action) = determine_status(&path, info.input_tokens, info.output_tokens);
 
             matched_session_ids.insert(session_id.clone());
 
@@ -683,6 +744,7 @@ pub fn discover_sessions(prev_sessions: &HashMap<String, Session>) -> Vec<Sessio
                 status,
                 pid: Some(live.pid),
                 last_activity: info.last_activity,
+                last_action,
                 started_at: live.started_at,
                 last_file_size: info.file_size,
             });
@@ -725,8 +787,8 @@ mod tests {
             status: SessionStatus::Working,
             pid: None,
             last_activity: None,
+            last_action: None,
             started_at: 0,
-
             last_file_size: 0,
         };
         assert_eq!(session.token_display(), "50k / 1M");
@@ -747,8 +809,8 @@ mod tests {
             status: SessionStatus::Working,
             pid: None,
             last_activity: None,
+            last_action: None,
             started_at: 0,
-
             last_file_size: 0,
         };
         assert!((session.token_ratio() - 1.0).abs() < 0.01);
@@ -802,6 +864,33 @@ mod tests {
     }
 
     #[test]
+    fn determine_status_returns_tool_action_for_tool_use_line() {
+        // We can't easily test determine_status directly (it reads files),
+        // so test the extraction helper we'll extract from it.
+        // We'll add extract_tool_action() as a pub(crate) fn for testability.
+        assert_eq!(
+            extract_tool_action(r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"src/main.rs"}}]}}"#),
+            Some("Edit main.rs".to_string())
+        );
+        assert_eq!(
+            extract_tool_action(r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"cargo test --release"}}]}}"#),
+            Some("Bash: cargo test --rele".to_string())
+        );
+        assert_eq!(
+            extract_tool_action(r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Grep","input":{"pattern":"fn pet_type"}}]}}"#),
+            Some("Grep: fn pet_type".to_string())
+        );
+        assert_eq!(
+            extract_tool_action(r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Agent","input":{}}]}}"#),
+            Some("Agent".to_string())
+        );
+        assert_eq!(
+            extract_tool_action(r#"{"type":"user","message":{}}"#),
+            None
+        );
+    }
+
+    #[test]
     fn test_room_id_with_relative_dir() {
         let mut session = Session {
             session_id: String::new(),
@@ -816,8 +905,8 @@ mod tests {
             status: SessionStatus::New,
             pid: None,
             last_activity: None,
+            last_action: None,
             started_at: 0,
-
             last_file_size: 0,
         };
         assert_eq!(session.room_id(), "myapp \u{203a} tools/cli");

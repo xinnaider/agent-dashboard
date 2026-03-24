@@ -3,6 +3,7 @@ mod cli;
 mod model;
 mod session;
 mod ui;
+mod view_ui;
 
 use clap::Parser;
 use cli::{Cli, Command};

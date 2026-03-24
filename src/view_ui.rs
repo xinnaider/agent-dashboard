@@ -161,6 +161,10 @@ fn session_phase_offset(session_id: &str) -> u64 {
     session_id.bytes().fold(0u64, |a, b| a.wrapping_add(b as u64)) % 7
 }
 
+fn pet_type(session_id: &str) -> usize {
+    session_id.bytes().fold(0u64, |a, b| a.wrapping_add(b as u64)) as usize % 6
+}
+
 fn status_color(status: &SessionStatus) -> Color {
     match status {
         SessionStatus::New => Color::Blue,
@@ -480,5 +484,27 @@ mod tests {
         assert_eq!(rooms[1].name, "/idle-recent");
         assert_eq!(rooms[2].name, "/idle-old");
         assert_eq!(rooms[3].name, "/egg");
+    }
+
+    #[test]
+    fn pet_type_is_in_range() {
+        // Any session_id maps to a value in [0, 5]
+        assert!(pet_type("abc-123") < 6);
+        assert!(pet_type("") < 6);
+        assert!(pet_type("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa") < 6);
+    }
+
+    #[test]
+    fn pet_type_is_deterministic() {
+        let id = "550e8400-e29b-41d4-a716-446655440000";
+        assert_eq!(pet_type(id), pet_type(id));
+    }
+
+    #[test]
+    fn pet_type_varies_across_ids() {
+        // With 6 types, a sample of 12 IDs should produce at least 2 distinct values
+        let ids = ["a","b","c","d","e","f","g","h","i","j","k","l"];
+        let types: std::collections::HashSet<usize> = ids.iter().map(|id| pet_type(id)).collect();
+        assert!(types.len() >= 2);
     }
 }

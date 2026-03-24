@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use clap::Parser;
 use crossterm::{
-    event::{self, Event},
+    event::{self, Event, KeyEventKind},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -86,7 +86,9 @@ fn run_app(
 
         if event::poll(Duration::from_millis(200))? {
             if let Event::Key(key) = event::read()? {
-                app.handle_key(key);
+                if key.kind == KeyEventKind::Press {
+                    app.handle_key(key);
+                }
             }
         }
 

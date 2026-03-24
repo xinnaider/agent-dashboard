@@ -689,34 +689,6 @@ pub fn discover_sessions(prev_sessions: &HashMap<String, Session>) -> Vec<Sessio
         }
     }
 
-    let known_pids: std::collections::HashSet<i32> = sessions
-        .iter()
-        .filter_map(|s| s.pid)
-        .collect();
-
-    for live in live_map.values() {
-        if known_pids.contains(&live.pid) {
-            continue;
-        }
-
-        sessions.push(Session {
-            session_id: format!("pid-{}", live.pid),
-            project_name: "new session".to_string(),
-            relative_dir: None,
-            branch: None,
-            cwd: String::new(),
-            model: None,
-            effort: None,
-            total_input_tokens: 0,
-            total_output_tokens: 0,
-            status: SessionStatus::New,
-            pid: Some(live.pid),
-            last_activity: None,
-            started_at: live.started_at,
-            last_file_size: 0,
-        });
-    }
-
     sessions.sort_by(|a, b| {
         truncate_to_minute(&b.last_activity)
             .cmp(&truncate_to_minute(&a.last_activity))

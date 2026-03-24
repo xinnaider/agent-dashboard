@@ -9,3 +9,4 @@ Thumbs.db
 *.stackdump
 .claude/plan
 .claude/settings.local.json
+docs/superpowers/plans/

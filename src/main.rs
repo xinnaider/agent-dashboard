@@ -1,5 +1,6 @@
 mod cli;
 mod model;
+mod session;
 
 use clap::Parser;
 use cli::{Cli, Command};

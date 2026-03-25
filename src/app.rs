@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::time::Instant;
 
 use crossterm::event::{KeyCode, KeyEvent};
 
@@ -23,7 +24,12 @@ pub struct App {
     pub view_selected_agent: usize,
     pub detail_selected: usize,
     pub detail_scroll: usize,
+    pub detail_auto_scroll: bool,
     pub detail_expanded: Option<usize>,
+    pub input_mode: bool,
+    pub input_buffer: String,
+    pub last_send: Option<Instant>,
+    pub last_send_label: Option<String>,
     prev_sessions: HashMap<String, Session>,
 }
 
@@ -47,7 +53,12 @@ impl App {
             view_selected_agent: 0,
             detail_selected: 0,
             detail_scroll: 0,
+            detail_auto_scroll: true,
             detail_expanded: None,
+            input_mode: false,
+            input_buffer: String::new(),
+            last_send: None,
+            last_send_label: None,
             prev_sessions: HashMap::new(),
         }
     }
@@ -55,16 +66,9 @@ impl App {
     pub fn refresh(&mut self) {
         let sessions = session::discover_sessions(&self.prev_sessions);
 
-        // Ring bell when any session newly enters Input state
-        let newly_input = sessions
-            .iter()
-            .filter(|s| s.status == SessionStatus::Input)
-            .any(|s| {
-                self.prev_sessions
-                    .get(&s.session_id)
-                    .map_or(true, |prev| prev.status != SessionStatus::Input)
-            });
-        if newly_input {
+        // Ring bell whenever any session is in Input state (repeats each refresh)
+        let any_input = sessions.iter().any(|s| s.status == SessionStatus::Input);
+        if any_input {
             eprint!("\x07");
         }
 
@@ -170,19 +174,78 @@ impl App {
     }
 
     fn handle_key_detail(&mut self, key: KeyEvent) {
+        // Input mode: typing a prompt to send to the agent
+        if self.input_mode {
+            match key.code {
+                KeyCode::Esc => {
+                    self.input_mode = false;
+                    self.input_buffer.clear();
+                }
+                KeyCode::Enter => {
+                    if !self.input_buffer.is_empty() {
+                        if let Some(idx) = self.detail_expanded {
+                            if let Some(s) = self.sessions.get(idx) {
+                                if let Some(pid) = s.pid {
+                                    let text = self.input_buffer.clone();
+                                    session::send_keys_to_pid(pid, &text);
+                                }
+                            }
+                        }
+                    }
+                    self.input_mode = false;
+                    self.input_buffer.clear();
+                }
+                KeyCode::Backspace => {
+                    self.input_buffer.pop();
+                }
+                KeyCode::Char(c) => {
+                    self.input_buffer.push(c);
+                }
+                _ => {}
+            }
+            return;
+        }
+
         if self.detail_expanded.is_some() {
             match key.code {
                 KeyCode::Char('j') | KeyCode::Down => {
                     self.detail_scroll = self.detail_scroll.saturating_add(1);
+                    self.detail_auto_scroll = false;
                 }
                 KeyCode::Char('k') | KeyCode::Up => {
                     self.detail_scroll = self.detail_scroll.saturating_sub(1);
+                    self.detail_auto_scroll = false;
+                }
+                KeyCode::Char('g') => {
+                    // Jump to bottom and re-enable auto-scroll
+                    self.detail_auto_scroll = true;
                 }
                 KeyCode::Esc => {
                     self.detail_expanded = None;
                     self.detail_scroll = 0;
+                    self.detail_auto_scroll = true;
                 }
                 KeyCode::Char('q') => self.should_quit = true,
+                KeyCode::Char('y') | KeyCode::Char('n') => {
+                    if self.is_send_debounced() { return; }
+                    if let Some(idx) = self.detail_expanded {
+                        if let Some(s) = self.sessions.get(idx) {
+                            if let Some(pid) = s.pid {
+                                let (ch, label) = if key.code == KeyCode::Char('y') {
+                                    ("1", "accepted")
+                                } else {
+                                    ("3", "rejected")
+                                };
+                                session::send_keys_to_pid(pid, ch);
+                                self.mark_sent(label);
+                            }
+                        }
+                    }
+                }
+                KeyCode::Char('i') => {
+                    self.input_mode = true;
+                    self.input_buffer.clear();
+                }
                 KeyCode::Char('d') | KeyCode::Char('t') => {
                     self.detail_expanded = None;
                     self.detail_scroll = 0;
@@ -212,6 +275,21 @@ impl App {
                 if !self.sessions.is_empty() {
                     self.detail_expanded =
                         Some(self.detail_selected.min(self.sessions.len() - 1));
+                    self.detail_auto_scroll = true;
+                }
+            }
+            KeyCode::Char('y') | KeyCode::Char('n') => {
+                if self.is_send_debounced() { return; }
+                if let Some(s) = self.sessions.get(self.detail_selected) {
+                    if let Some(pid) = s.pid {
+                        let (ch, label) = if key.code == KeyCode::Char('y') {
+                            ("1", "accepted")
+                        } else {
+                            ("3", "rejected")
+                        };
+                        session::send_keys_to_pid(pid, ch);
+                        self.mark_sent(label);
+                    }
                 }
             }
             KeyCode::Char('d') | KeyCode::Char('t') => {
@@ -226,6 +304,16 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    fn is_send_debounced(&self) -> bool {
+        self.last_send
+            .map_or(false, |t| t.elapsed().as_millis() < 1500)
+    }
+
+    fn mark_sent(&mut self, label: &str) {
+        self.last_send = Some(Instant::now());
+        self.last_send_label = Some(label.to_string());
     }
 
     pub fn to_json(&self) -> String {
@@ -297,7 +385,7 @@ mod tests {
                 pid: None,
                 last_activity: None,
                 last_action: None,
-                last_bash_lines: None,
+                activity_log: Vec::new(),
                 started_at: 0,
                 last_file_size: 0,
             });
@@ -355,7 +443,7 @@ mod tests {
             pid: None,
             last_activity: None,
             last_action: None,
-            last_bash_lines: None,
+            activity_log: Vec::new(),
             started_at: 0,
             last_file_size: 0,
         });

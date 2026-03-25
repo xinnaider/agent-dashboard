@@ -44,7 +44,7 @@ pub struct Session {
     pub effort: Option<String>,
     pub last_activity: Option<String>,
     pub last_action: Option<String>,
-    pub last_bash_lines: Option<Vec<String>>,
+    pub activity_log: Vec<String>,
     pub started_at: u64,
     pub last_file_size: u64,
 }
@@ -125,6 +125,35 @@ fn get_claude_cli_pids() -> std::collections::HashSet<i32> {
         }
     }
     pids
+}
+
+/// Send keystrokes to a running process by injecting into its console input buffer.
+/// Uses PowerShell + Win32 AttachConsole/WriteConsoleInput in a background process
+/// so it doesn't disrupt the dashboard's own terminal.
+/// Send keystrokes to a running process via the native `send-keys` helper binary.
+/// The helper uses Win32 AttachConsole + WriteConsoleInputW (instant, no PowerShell).
+pub fn send_keys_to_pid(pid: i32, text: &str) {
+    // Find the send-keys binary next to our own executable
+    let helper = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.join("send-keys").with_extension(std::env::consts::EXE_EXTENSION)))
+        .unwrap_or_else(|| PathBuf::from("send-keys"));
+
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        let _ = ProcessCommand::new(&helper)
+            .args([&pid.to_string(), text])
+            .creation_flags(0x08000000) // CREATE_NO_WINDOW
+            .spawn();
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = ProcessCommand::new(&helper)
+            .args([&pid.to_string(), text])
+            .spawn();
+    }
 }
 
 fn build_live_session_map() -> HashMap<String, LiveSessionInfo> {
@@ -528,6 +557,62 @@ pub(crate) fn extract_tool_action(line: &str) -> Option<String> {
     Some(line[start..end].to_string())
 }
 
+/// Extract a detailed description of the tool call: name + relevant input.
+/// E.g. "Bash: cargo test", "Edit …/session.rs", "Read …/app.rs"
+fn extract_tool_detail(line: &str) -> Option<String> {
+    let name = extract_tool_action(line)?;
+
+    match name.as_str() {
+        "Bash" => {
+            if let Some(cmd) = extract_json_string(line, "\"command\":\"") {
+                let first_line = cmd.lines().next().unwrap_or(&cmd);
+                let display = if first_line.len() > 80 {
+                    format!("{}…", &first_line[..80])
+                } else {
+                    first_line.to_string()
+                };
+                Some(format!("Bash: {display}"))
+            } else {
+                Some(name)
+            }
+        }
+        "Edit" | "Read" | "Write" => {
+            if let Some(path) = extract_json_string(line, "\"file_path\":\"") {
+                let parts: Vec<&str> = path.split(&['/', '\\']).filter(|s| !s.is_empty()).collect();
+                let short = if parts.len() >= 2 {
+                    format!("\u{2026}/{}", parts[parts.len() - 1])
+                } else {
+                    parts.last().copied().unwrap_or(&path).to_string()
+                };
+                Some(format!("{name} {short}"))
+            } else {
+                Some(name)
+            }
+        }
+        "Grep" => {
+            if let Some(pattern) = extract_json_string(line, "\"pattern\":\"") {
+                let display = if pattern.len() > 40 {
+                    format!("{}…", &pattern[..40])
+                } else {
+                    pattern
+                };
+                Some(format!("Grep: {display}"))
+            } else {
+                Some(name)
+            }
+        }
+        "Agent" => {
+            if let Some(desc) = extract_json_string(line, "\"description\":\"") {
+                Some(format!("Agent: {desc}"))
+            } else {
+                Some(name)
+            }
+        }
+        _ => Some(name),
+    }
+}
+
+#[allow(dead_code)]
 pub(crate) fn extract_tool_id(line: &str) -> Option<String> {
     // Find the tool_use object first, then look for its "id" within that context
     let tu_pos = line.find("\"type\":\"tool_use\"")?;
@@ -559,6 +644,7 @@ fn extract_json_string(haystack: &str, marker: &str) -> Option<String> {
     Some(result)
 }
 
+#[allow(dead_code)]
 pub(crate) fn extract_bash_lines(line: &str, bash_id: &str) -> Option<Vec<String>> {
     if !line.contains("\"tool_result\"") {
         return None;
@@ -583,28 +669,77 @@ pub(crate) fn extract_bash_lines(line: &str, bash_id: &str) -> Option<Vec<String
     Some(lines[start..].to_vec())
 }
 
-fn determine_status(path: &Path, input_tokens: u64, output_tokens: u64) -> (SessionStatus, Option<String>, Option<Vec<String>>) {
+fn extract_assistant_text(line: &str) -> Option<String> {
+    if !line.contains("\"type\":\"assistant\"") || !line.contains("\"type\":\"text\"") {
+        return None;
+    }
+    let pos = line.find("\"type\":\"text\"")?;
+    let from_pos = &line[pos..];
+    extract_json_string(from_pos, "\"text\":\"")
+}
+
+fn extract_tool_result_content(line: &str) -> Option<String> {
+    if !line.contains("\"tool_result\"") {
+        return None;
+    }
+    let tr_pos = line.find("\"tool_result\"")?;
+    let from_tr = &line[tr_pos..];
+    extract_json_string(from_tr, "\"content\":\"")
+        .or_else(|| extract_json_string(from_tr, "\"text\":\""))
+}
+
+fn extract_user_text(line: &str) -> Option<String> {
+    if !line.contains("\"type\":\"user\"") {
+        return None;
+    }
+    // Skip tool results and system messages
+    if line.contains("\"tool_result\"") || line.contains("\"tool_use_id\"") {
+        return None;
+    }
+
+    // Try direct string content: "content":"some text"
+    // Find "content":" and check it's a simple string (not array)
+    if let Some(pos) = line.find("\"content\":\"") {
+        // Make sure it's not "content":[ (array)
+        let after_key = &line[pos + 10..];
+        if after_key.starts_with('"') {
+            if let Some(text) = extract_json_string(line, "\"content\":\"") {
+                // Limit to first 200 chars to avoid huge skill prompts
+                if !text.is_empty() {
+                    let truncated = if text.len() > 200 {
+                        format!("{}…", &text[..200])
+                    } else {
+                        text
+                    };
+                    return Some(truncated);
+                }
+            }
+        }
+    }
+    None
+}
+
+fn determine_status(path: &Path, input_tokens: u64, output_tokens: u64) -> (SessionStatus, Option<String>, Vec<String>) {
     if input_tokens == 0 && output_tokens == 0 {
-        return (SessionStatus::New, None, None);
+        return (SessionStatus::New, None, Vec::new());
     }
 
     let file = match fs::File::open(path) {
         Ok(f) => f,
-        Err(_) => return (SessionStatus::Idle, None, None),
+        Err(_) => return (SessionStatus::Idle, None, Vec::new()),
     };
 
     let file_size = file.metadata().map(|m| m.len()).unwrap_or(0);
     let mut reader = BufReader::new(file);
 
-    let seek_pos = file_size.saturating_sub(8192);
+    let seek_pos = file_size.saturating_sub(32768);
     let _ = reader.seek(SeekFrom::Start(seek_pos));
 
     let mut last_type = String::new();
     let mut last_timestamp = String::new();
-    let mut has_tool_use_permission = false;
+    let mut awaiting_tool_result = false;
     let mut last_action: Option<String> = None;
-    let mut last_bash_id = String::new();
-    let mut last_bash_lines: Option<Vec<String>> = None;
+    let mut activity_log: Vec<String> = Vec::new();
 
     let mut line = String::new();
     loop {
@@ -622,27 +757,55 @@ fn determine_status(path: &Path, input_tokens: u64, output_tokens: u64) -> (Sess
 
         if trimmed.contains("\"type\":\"assistant\"") {
             last_type = "assistant".to_string();
-            has_tool_use_permission = trimmed.contains("\"type\":\"tool_use\"");
+            if trimmed.contains("\"type\":\"tool_use\"") {
+                awaiting_tool_result = true;
+            }
+
+            // Collect assistant text output
+            if let Some(text) = extract_assistant_text(trimmed) {
+                for text_line in text.lines() {
+                    let t = text_line.trim_end();
+                    if !t.is_empty() {
+                        activity_log.push(t.to_string());
+                    }
+                }
+            }
         } else if trimmed.contains("\"type\":\"user\"") {
             last_type = "user".to_string();
-            has_tool_use_permission = false;
+            if trimmed.contains("\"tool_result\"") {
+                awaiting_tool_result = false;
+
+                // Collect tool result output (bash, read, etc.)
+                if let Some(content) = extract_tool_result_content(trimmed) {
+                    let lines: Vec<&str> = content.lines()
+                        .map(|l| l.trim_end())
+                        .filter(|l| !l.is_empty())
+                        .collect();
+                    let start = lines.len().saturating_sub(15);
+                    for out_line in &lines[start..] {
+                        activity_log.push(format!("  {out_line}"));
+                    }
+                }
+            } else {
+                // User text input (prompt)
+                if let Some(text) = extract_user_text(trimmed) {
+                    for text_line in text.lines() {
+                        let t = text_line.trim_end();
+                        if !t.is_empty() {
+                            activity_log.push(format!("\u{276f} {t}"));
+                        }
+                    }
+                }
+            }
         } else if trimmed.contains("\"type\":\"progress\"") {
             last_type = "progress".to_string();
-            has_tool_use_permission = false;
+            // Don't reset awaiting_tool_result — progress appears while waiting for approval
         }
 
         if trimmed.contains("\"type\":\"tool_use\"") {
             last_action = extract_tool_action(trimmed);
-            if last_action.as_deref() == Some("Bash") {
-                last_bash_id = extract_tool_id(trimmed).unwrap_or_default();
-            } else {
-                last_bash_id = String::new(); // clear stale id when non-Bash tool is used
-            }
-        }
-
-        if !last_bash_id.is_empty() {
-            if let Some(bash_lines) = extract_bash_lines(trimmed, &last_bash_id) {
-                last_bash_lines = Some(bash_lines);
+            if let Some(detail) = extract_tool_detail(trimmed) {
+                activity_log.push(format!("\u{25b6} {detail}"));
             }
         }
 
@@ -654,24 +817,30 @@ fn determine_status(path: &Path, input_tokens: u64, output_tokens: u64) -> (Sess
         }
     }
 
-    if last_type == "assistant" && has_tool_use_permission {
-        return (SessionStatus::Input, last_action, last_bash_lines);
+    // Keep last 100 lines of activity
+    let max_log = 100;
+    if activity_log.len() > max_log {
+        activity_log = activity_log.split_off(activity_log.len() - max_log);
+    }
+
+    if awaiting_tool_result {
+        return (SessionStatus::Input, last_action, activity_log);
     }
 
     if !last_timestamp.is_empty() {
         if let Ok(dt) = last_timestamp.parse::<chrono::DateTime<chrono::Utc>>() {
             let elapsed = chrono::Utc::now() - dt;
             if elapsed.num_seconds() < 30 {
-                return (SessionStatus::Working, last_action.clone(), last_bash_lines.clone());
+                return (SessionStatus::Working, last_action, activity_log);
             }
         }
     }
 
     if last_type == "progress" {
-        return (SessionStatus::Working, last_action.clone(), last_bash_lines.clone());
+        return (SessionStatus::Working, last_action, activity_log);
     }
 
-    (SessionStatus::Idle, last_action, last_bash_lines)
+    (SessionStatus::Idle, last_action, activity_log)
 }
 
 fn truncate_to_minute(ts: &Option<String>) -> Option<String> {
@@ -720,14 +889,34 @@ pub fn discover_sessions(prev_sessions: &HashMap<String, Session>) -> Vec<Sessio
                 continue;
             }
 
-            let session_id = path
+            let jsonl_name = path
                 .file_stem()
                 .map(|s| s.to_string_lossy().to_string())
                 .unwrap_or_default();
 
-            let live = match live_map.get(&session_id) {
-                Some(l) => l,
-                None => continue,
+            // Match by JSONL filename first, then by session ID inside the file
+            let (session_id, live) = if let Some(l) = live_map.get(&jsonl_name) {
+                (jsonl_name.clone(), l)
+            } else {
+                // Context resets create a new session ID but reuse the old JSONL file.
+                // Check if any live session ID appears in the last few KB of the file.
+                let mut found = None;
+                if let Ok(content) = fs::read_to_string(&path) {
+                    let tail_start = content.len().saturating_sub(4096);
+                    // Find a valid char boundary
+                    let safe_start = content.ceil_char_boundary(tail_start);
+                    let tail = &content[safe_start..];
+                    for (sid, info) in &live_map {
+                        if tail.contains(sid.as_str()) {
+                            found = Some((sid.clone(), info));
+                            break;
+                        }
+                    }
+                }
+                match found {
+                    Some((sid, l)) => (sid, l),
+                    None => continue,
+                }
             };
 
             if matched_session_ids.contains(&session_id) {
@@ -751,7 +940,7 @@ pub fn discover_sessions(prev_sessions: &HashMap<String, Session>) -> Vec<Sessio
                 .unwrap_or_else(|| decode_project_path(&project_dir));
             let (project_name, relative_dir, branch) = git_project_info(&cwd);
 
-            let (status, last_action, last_bash_lines) = determine_status(&path, info.input_tokens, info.output_tokens);
+            let (status, last_action, activity_log) = determine_status(&path, info.input_tokens, info.output_tokens);
 
             matched_session_ids.insert(session_id.clone());
 
@@ -769,7 +958,7 @@ pub fn discover_sessions(prev_sessions: &HashMap<String, Session>) -> Vec<Sessio
                 pid: Some(live.pid),
                 last_activity: info.last_activity,
                 last_action,
-                last_bash_lines,
+                activity_log,
                 started_at: live.started_at,
                 last_file_size: info.file_size,
             });
@@ -813,7 +1002,7 @@ mod tests {
             pid: None,
             last_activity: None,
             last_action: None,
-            last_bash_lines: None,
+            activity_log: Vec::new(),
             started_at: 0,
             last_file_size: 0,
         };
@@ -836,7 +1025,7 @@ mod tests {
             pid: None,
             last_activity: None,
             last_action: None,
-            last_bash_lines: None,
+            activity_log: Vec::new(),
             started_at: 0,
             last_file_size: 0,
         };
@@ -933,7 +1122,7 @@ mod tests {
             pid: None,
             last_activity: None,
             last_action: None,
-            last_bash_lines: None,
+            activity_log: Vec::new(),
             started_at: 0,
             last_file_size: 0,
         };

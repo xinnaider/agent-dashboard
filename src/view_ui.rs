@@ -689,7 +689,7 @@ mod tests {
             pid: None,
             last_activity: last_activity.map(|s| s.to_string()),
             last_action: None,
-            last_bash_lines: None,
+            activity_log: Vec::new(),
             started_at: 0,
             last_file_size: 0,
         }

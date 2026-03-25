@@ -14,16 +14,27 @@ use crate::view_ui::{action_or_label, status_color, truncate_str};
 const BLOCK_H: u16 = 7; // border(1) + 5 inner lines + border(1)
 
 pub fn render(frame: &mut Frame, app: &App) {
-    let chunks =
-        Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).split(frame.area());
+    let input_h = if app.input_mode { 1 } else { 0 };
+    let chunks = Layout::vertical([
+        Constraint::Min(1),
+        Constraint::Length(input_h),
+        Constraint::Length(1),
+    ])
+    .split(frame.area());
+
     if let Some(idx) = app.detail_expanded {
         if let Some(session) = app.sessions.get(idx) {
-            render_expanded(frame, session, app.detail_scroll, chunks[0]);
+            render_expanded(frame, session, app, chunks[0]);
         }
     } else {
         render_grid(frame, app, chunks[0]);
     }
-    render_footer(frame, app, chunks[1]);
+
+    if app.input_mode {
+        render_input_bar(frame, &app.input_buffer, chunks[1]);
+    }
+
+    render_footer(frame, app, chunks[2]);
 }
 
 fn render_grid(frame: &mut Frame, app: &App, area: Rect) {
@@ -117,27 +128,20 @@ fn render_block(frame: &mut Frame, session: &Session, area: Rect, is_selected: b
         )));
     }
 
-    // Lines 4+: bash output
+    // Lines 4+: activity log
     if inner.height > 3 {
-        let bash_lines: Vec<&str> = session
-            .last_bash_lines
-            .as_ref()
-            .map(|v| v.iter().map(|s| s.as_str()).collect())
-            .unwrap_or_default();
         let available = (inner.height - 3) as usize;
-        let start = bash_lines.len().saturating_sub(available);
-        for bash_line in bash_lines.iter().skip(start).take(available) {
-            lines.push(Line::from(Span::styled(
-                truncate_str(bash_line, w),
-                Style::default().fg(Color::Rgb(140, 140, 140)),
-            )));
+        let start = session.activity_log.len().saturating_sub(available);
+        for log_line in session.activity_log.iter().skip(start).take(available) {
+            let (text, color) = activity_line_style(log_line, w);
+            lines.push(Line::from(Span::styled(text, Style::default().fg(color))));
         }
     }
 
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
-fn render_expanded(frame: &mut Frame, session: &Session, scroll: usize, area: Rect) {
+fn render_expanded(frame: &mut Frame, session: &Session, app: &App, area: Rect) {
     let color = status_color(&session.status);
     let title = build_block_title(session);
     let block = Block::default()
@@ -153,58 +157,147 @@ fn render_expanded(frame: &mut Frame, session: &Session, scroll: usize, area: Re
     let w = inner.width as usize;
     let available = inner.height as usize;
 
-    let bash_lines: Vec<&str> = session
-        .last_bash_lines
-        .as_ref()
-        .map(|v| v.iter().map(|s| s.as_str()).collect())
-        .unwrap_or_default();
-
     let mut lines: Vec<Line> = Vec::new();
 
-    if bash_lines.is_empty() {
+    if session.activity_log.is_empty() {
         lines.push(Line::from(Span::styled(
-            "No bash output recorded",
+            "No activity recorded",
             Style::default().fg(Color::DarkGray),
         )));
     } else {
-        let max_scroll = bash_lines.len().saturating_sub(available);
-        let start = scroll.min(max_scroll);
-        for bash_line in bash_lines.iter().skip(start).take(available) {
-            lines.push(Line::from(Span::styled(
-                truncate_str(bash_line, w),
-                Style::default().fg(Color::Rgb(200, 200, 200)),
-            )));
+        let max_scroll = session.activity_log.len().saturating_sub(available);
+        let scroll = if app.detail_auto_scroll {
+            max_scroll
+        } else {
+            app.detail_scroll.min(max_scroll)
+        };
+        for log_line in session.activity_log.iter().skip(scroll).take(available) {
+            let (text, color) = activity_line_style(log_line, w);
+            lines.push(Line::from(Span::styled(text, Style::default().fg(color))));
         }
     }
 
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
+fn render_input_bar(frame: &mut Frame, buffer: &str, area: Rect) {
+    let line = Line::from(vec![
+        Span::styled(" \u{276f} ", Style::default().fg(Color::Yellow)),
+        Span::styled(buffer, Style::default().fg(Color::White)),
+        Span::styled("\u{2588}", Style::default().fg(Color::Yellow)), // cursor block
+    ]);
+    frame.render_widget(Paragraph::new(line), area);
+}
+
 fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
-    let spans = if app.detail_expanded.is_some() {
+    // Show "✓ accepted" or "✗ rejected" feedback for 1.5s after sending
+    let send_feedback: Option<(&str, Color)> = app.last_send.and_then(|t| {
+        if t.elapsed().as_millis() < 1500 {
+            app.last_send_label.as_deref().map(|label| {
+                if label == "accepted" {
+                    ("\u{2713} accepted  ", Color::Green)
+                } else {
+                    ("\u{2717} rejected  ", Color::Red)
+                }
+            })
+        } else {
+            None
+        }
+    });
+
+    let spans = if app.input_mode {
         vec![
+            Span::styled("Enter", Style::default().fg(Color::Yellow)),
+            Span::raw(" send  "),
+            Span::styled("Esc", Style::default().fg(Color::Cyan)),
+            Span::raw(" cancel"),
+        ]
+    } else if app.detail_expanded.is_some() {
+        let expanded_is_input = app
+            .detail_expanded
+            .and_then(|idx| app.sessions.get(idx))
+            .map_or(false, |s| s.status == SessionStatus::Input);
+        let mut s = vec![
             Span::styled("j/k", Style::default().fg(Color::Cyan)),
             Span::raw(" scroll  "),
+        ];
+        if !app.detail_auto_scroll {
+            s.extend([
+                Span::styled("g", Style::default().fg(Color::Cyan)),
+                Span::raw(" bottom  "),
+            ]);
+        }
+        s.extend([
+            Span::styled("i", Style::default().fg(Color::Cyan)),
+            Span::raw(" prompt  "),
+        ]);
+        if expanded_is_input {
+            s.extend([
+                Span::styled("y", Style::default().fg(Color::Yellow)),
+                Span::raw(" accept  "),
+                Span::styled("n", Style::default().fg(Color::Yellow)),
+                Span::raw(" reject  "),
+            ]);
+        }
+        s.extend([
             Span::styled("Esc", Style::default().fg(Color::Cyan)),
             Span::raw(" back  "),
             Span::styled("q", Style::default().fg(Color::Cyan)),
             Span::raw(" quit"),
-        ]
+        ]);
+        s
     } else {
-        vec![
+        let selected_is_input = app
+            .sessions
+            .get(app.detail_selected)
+            .map_or(false, |s| s.status == SessionStatus::Input);
+        let mut spans = vec![
             Span::styled("j/k", Style::default().fg(Color::Cyan)),
             Span::raw(" navigate  "),
             Span::styled("Enter", Style::default().fg(Color::Cyan)),
             Span::raw(" expand  "),
+        ];
+        if selected_is_input {
+            spans.extend([
+                Span::styled("y", Style::default().fg(Color::Yellow)),
+                Span::raw(" accept  "),
+                Span::styled("n", Style::default().fg(Color::Yellow)),
+                Span::raw(" reject  "),
+            ]);
+        }
+        spans.extend([
             Span::styled("d", Style::default().fg(Color::Cyan)),
             Span::raw(" table  "),
             Span::styled("v", Style::default().fg(Color::Cyan)),
             Span::raw(" view  "),
             Span::styled("q", Style::default().fg(Color::Cyan)),
             Span::raw(" quit"),
-        ]
+        ]);
+        spans
     };
-    frame.render_widget(Paragraph::new(Line::from(spans)), area);
+
+    let mut final_spans = Vec::new();
+    if let Some((label, color)) = send_feedback {
+        final_spans.push(Span::styled(label, Style::default().fg(color)));
+    }
+    final_spans.extend(spans);
+    frame.render_widget(Paragraph::new(Line::from(final_spans)), area);
+}
+
+fn activity_line_style(line: &str, max_width: usize) -> (String, Color) {
+    if line.starts_with('\u{25b6}') {
+        // Tool call: ▶ Edit …/file.rs
+        (truncate_str(line, max_width), Color::Cyan)
+    } else if line.starts_with('\u{276f}') {
+        // User input: ❯ prompt text
+        (truncate_str(line, max_width), Color::Yellow)
+    } else if line.starts_with("  ") {
+        // Tool output (indented)
+        (truncate_str(line, max_width), Color::Rgb(140, 140, 140))
+    } else {
+        // Claude text
+        (truncate_str(line, max_width), Color::White)
+    }
 }
 
 pub(crate) fn build_block_title(session: &Session) -> String {
@@ -250,7 +343,7 @@ mod tests {
             pid: Some(1234),
             last_activity: Some("2026-03-24T10:00:00Z".to_string()),
             last_action: Some("Bash".to_string()),
-            last_bash_lines: Some(vec!["running 5 tests".to_string(), "ok".to_string()]),
+            activity_log: vec!["\u{25b6} Bash cargo test".to_string(), "  running 5 tests".to_string(), "  ok".to_string()],
             started_at: 0,
             last_file_size: 0,
         }

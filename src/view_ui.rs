@@ -687,6 +687,14 @@ mod tests {
     }
 
     #[test]
+    fn status_label_shows_new_label_even_with_action() {
+        // New sessions never show action
+        let mut s = make_session("/a", SessionStatus::New, None);
+        s.last_action = Some("Edit main.rs".to_string());
+        assert_eq!(action_or_label(&s), "New");
+    }
+
+    #[test]
     fn status_label_shows_action_when_input_with_action() {
         let mut s = make_session("/a", SessionStatus::Input, Some("2026-03-24T10:00:00Z"));
         s.last_action = Some("Read file.rs".to_string());

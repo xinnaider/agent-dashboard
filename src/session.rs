@@ -864,7 +864,7 @@ mod tests {
     }
 
     #[test]
-    fn determine_status_returns_tool_action_for_tool_use_line() {
+    fn extract_tool_action_parses_known_tool_types() {
         // We can't easily test determine_status directly (it reads files),
         // so test the extraction helper we'll extract from it.
         // We'll add extract_tool_action() as a pub(crate) fn for testability.

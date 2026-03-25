@@ -156,13 +156,14 @@ fn render_footer(frame: &mut Frame, area: Rect) {
 }
 
 fn shorten_home(path: &str) -> String {
+    let normalized = path.replace('\\', "/");
     if let Some(home) = dirs::home_dir() {
-        let home_str = home.to_string_lossy();
-        if let Some(rest) = path.strip_prefix(home_str.as_ref()) {
+        let home_str = home.to_string_lossy().replace('\\', "/");
+        if let Some(rest) = normalized.strip_prefix(home_str.as_str()) {
             return format!("~{rest}");
         }
     }
-    path.to_string()
+    normalized
 }
 
 fn format_timestamp(ts: &str) -> String {

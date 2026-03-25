@@ -114,8 +114,8 @@ fn render_table(frame: &mut Frame, app: &App, area: Rect) {
     let widths = [
         Constraint::Length(4),
         Constraint::Length(8),
+        Constraint::Length(22),
         Constraint::Min(20),
-        Constraint::Length(24),
         Constraint::Length(10),
         Constraint::Length(20),
         Constraint::Length(14),

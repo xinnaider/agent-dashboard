@@ -529,10 +529,13 @@ pub(crate) fn extract_tool_action(line: &str) -> Option<String> {
 }
 
 pub(crate) fn extract_tool_id(line: &str) -> Option<String> {
+    // Find the tool_use object first, then look for its "id" within that context
+    let tu_pos = line.find("\"type\":\"tool_use\"")?;
+    let from_tu = &line[tu_pos..];
     let marker = "\"id\":\"";
-    let start = line.find(marker)? + marker.len();
-    let end = line[start..].find('"')? + start;
-    Some(line[start..end].to_string())
+    let start = from_tu.find(marker)? + marker.len();
+    let end = from_tu[start..].find('"')? + start;
+    Some(from_tu[start..end].to_string())
 }
 
 fn extract_json_string(haystack: &str, marker: &str) -> Option<String> {
@@ -632,6 +635,8 @@ fn determine_status(path: &Path, input_tokens: u64, output_tokens: u64) -> (Sess
             last_action = extract_tool_action(trimmed);
             if last_action.as_deref() == Some("Bash") {
                 last_bash_id = extract_tool_id(trimmed).unwrap_or_default();
+            } else {
+                last_bash_id = String::new(); // clear stale id when non-Bash tool is used
             }
         }
 
@@ -948,6 +953,13 @@ mod tests {
     fn extract_tool_id_returns_none_without_id() {
         let line = r#"{"type":"user","message":{}}"#;
         assert_eq!(extract_tool_id(line), None);
+    }
+
+    #[test]
+    fn extract_tool_id_skips_message_level_id() {
+        // Real Claude JSONL has message.id before tool_use.id — must return the tool_use id
+        let line = r#"{"type":"assistant","message":{"id":"msg_01abc","content":[{"type":"tool_use","id":"toolu_01xyz","name":"Bash","input":{"command":"cargo test"}}]}}"#;
+        assert_eq!(extract_tool_id(line), Some("toolu_01xyz".to_string()));
     }
 
     #[test]

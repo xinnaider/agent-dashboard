@@ -648,6 +648,8 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
             spans.push(Span::raw(format!(" page ({}/{})  ", page + 1, total_pages)));
         }
     }
+    spans.push(Span::styled("d", Style::default().fg(Color::Cyan)));
+    spans.push(Span::raw(" detail  "));
     spans.push(Span::styled("v", Style::default().fg(Color::Cyan)));
     spans.push(Span::raw(" table  "));
     spans.push(Span::styled("q", Style::default().fg(Color::Cyan)));

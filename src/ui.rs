@@ -143,6 +143,8 @@ fn render_footer(frame: &mut Frame, area: Rect) {
         Span::raw(" navigate  "),
         Span::styled("v", Style::default().fg(Color::Cyan)),
         Span::raw(" view  "),
+        Span::styled("d", Style::default().fg(Color::Cyan)),
+        Span::raw(" detail  "),
         Span::styled("r", Style::default().fg(Color::Cyan)),
         Span::raw(" refresh  "),
         Span::styled("q", Style::default().fg(Color::Cyan)),

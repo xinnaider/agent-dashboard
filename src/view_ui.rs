@@ -490,13 +490,27 @@ pub fn render(frame: &mut Frame, app: &App) {
 
 fn render_rooms(frame: &mut Frame, app: &App, area: Rect) {
     let rooms = group_into_rooms(&app.sessions);
+    let any_input = rooms.iter().any(|r| r.has_input);
+
+    // Outer board frame — blinks yellow when any session needs input
+    let outer_color = if any_input {
+        if app.tick.is_multiple_of(2) { Color::Yellow } else { Color::White }
+    } else {
+        Color::Rgb(40, 40, 40)
+    };
+    let outer_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(outer_color));
+    let inner_area = outer_block.inner(area);
+    frame.render_widget(outer_block, area);
+
     if rooms.is_empty() {
-        render_empty(frame, area, app.tick);
+        render_empty(frame, inner_area, app.tick);
         return;
     }
     if let Some(ref zoomed_name) = app.view_zoomed_room {
         if let Some(room) = rooms.iter().find(|r| &r.name == zoomed_name) {
-            render_room(frame, app, room, area, None, Some(app.view_selected_agent));
+            render_room(frame, app, room, inner_area, None, Some(app.view_selected_agent));
             return;
         }
     }
@@ -504,7 +518,7 @@ fn render_rooms(frame: &mut Frame, app: &App, area: Rect) {
     let page = app.view_page.min(total_pages.saturating_sub(1));
     let page_start = page * ROOMS_PER_PAGE;
     let page_rooms: Vec<&Room> = rooms.iter().skip(page_start).take(ROOMS_PER_PAGE).collect();
-    let v_chunks = Layout::vertical([Constraint::Ratio(1, 2), Constraint::Ratio(1, 2)]).split(area);
+    let v_chunks = Layout::vertical([Constraint::Ratio(1, 2), Constraint::Ratio(1, 2)]).split(inner_area);
     let top_h = Layout::horizontal([Constraint::Ratio(1, 2), Constraint::Ratio(1, 2)]).split(v_chunks[0]);
     let bot_h = Layout::horizontal([Constraint::Ratio(1, 2), Constraint::Ratio(1, 2)]).split(v_chunks[1]);
     let cells = [top_h[0], top_h[1], bot_h[0], bot_h[1]];

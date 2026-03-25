@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use crossterm::event::{KeyCode, KeyEvent};
 
-use crate::session::{self, Session};
+use crate::session::{self, Session, SessionStatus};
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum ViewMode {
@@ -47,6 +47,19 @@ impl App {
 
     pub fn refresh(&mut self) {
         let sessions = session::discover_sessions(&self.prev_sessions);
+
+        // Ring bell when any session newly enters Input state
+        let newly_input = sessions
+            .iter()
+            .filter(|s| s.status == SessionStatus::Input)
+            .any(|s| {
+                self.prev_sessions
+                    .get(&s.session_id)
+                    .map_or(true, |prev| prev.status != SessionStatus::Input)
+            });
+        if newly_input {
+            eprint!("\x07");
+        }
 
         self.prev_sessions = sessions
             .iter()

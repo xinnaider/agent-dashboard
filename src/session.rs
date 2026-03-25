@@ -530,8 +530,13 @@ pub(crate) fn extract_tool_action(line: &str) -> Option<String> {
     };
     // Try file_path first
     if let Some(path) = extract_str_value(line, "\"file_path\":\"") {
-        let basename = path.rsplit(&['/', '\\'][..]).next().unwrap_or(&path).to_string();
-        return Some(format!("{} {}", name, basename));
+        let parts: Vec<&str> = path.split(&['/', '\\'][..]).filter(|s| !s.is_empty()).collect();
+        let display = if parts.len() >= 2 {
+            format!("\u{2026}/{}", parts[parts.len() - 1])
+        } else {
+            parts.last().copied().unwrap_or(&path).to_string()
+        };
+        return Some(format!("{} {}", name, display));
     }
     // Try command
     if let Some(cmd) = extract_str_value(line, "\"command\":\"") {
@@ -870,7 +875,7 @@ mod tests {
         // We'll add extract_tool_action() as a pub(crate) fn for testability.
         assert_eq!(
             extract_tool_action(r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"src/main.rs"}}]}}"#),
-            Some("Edit main.rs".to_string())
+            Some("Edit \u{2026}/main.rs".to_string())
         );
         assert_eq!(
             extract_tool_action(r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"cargo test --release"}}]}}"#),

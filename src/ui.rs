@@ -122,11 +122,19 @@ fn render_table(frame: &mut Frame, app: &App, area: Rect) {
         Constraint::Length(14),
     ];
 
+    let any_input = app.sessions.iter().any(|s| s.status == SessionStatus::Input);
+    let border_color = if any_input {
+        if app.tick.is_multiple_of(2) { Color::Yellow } else { Color::White }
+    } else {
+        Color::Reset
+    };
+
     let table = Table::new(rows, widths)
         .header(header)
         .block(
             Block::default()
                 .borders(Borders::ALL)
+                .border_style(Style::default().fg(border_color))
                 .title(" agent-dashboard \u{2014} Claude Code Sessions "),
         );
 

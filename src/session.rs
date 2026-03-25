@@ -521,60 +521,10 @@ pub(crate) fn extract_tool_action(line: &str) -> Option<String> {
     if !line.contains("\"type\":\"tool_use\"") {
         return None;
     }
-    // Extract tool name
-    let name = {
-        let marker = "\"name\":\"";
-        let start = line.find(marker)? + marker.len();
-        let end = line[start..].find('"')? + start;
-        &line[start..end]
-    };
-    // Try file_path first
-    if let Some(path) = extract_str_value(line, "\"file_path\":\"") {
-        let parts: Vec<&str> = path.split(&['/', '\\'][..]).filter(|s| !s.is_empty()).collect();
-        let display = if parts.len() >= 2 {
-            format!("\u{2026}/{}", parts[parts.len() - 1])
-        } else {
-            parts.last().copied().unwrap_or(&path).to_string()
-        };
-        return Some(format!("{} {}", name, display));
-    }
-    // Try command
-    if let Some(cmd) = extract_str_value(line, "\"command\":\"") {
-        let truncated = truncate_arg(&cmd, 17);
-        return Some(format!("{}: {}", name, truncated));
-    }
-    // Try pattern
-    if let Some(pat) = extract_str_value(line, "\"pattern\":\"") {
-        let truncated = truncate_arg(&pat, 17);
-        return Some(format!("{}: {}", name, truncated));
-    }
-    // Fallback: just tool name
-    Some(name.to_string())
-}
-
-fn extract_str_value(line: &str, marker: &str) -> Option<String> {
+    let marker = "\"name\":\"";
     let start = line.find(marker)? + marker.len();
-    // Handle JSON escape sequences minimally — find closing unescaped quote
-    let rest = &line[start..];
-    let mut result = String::new();
-    let mut chars = rest.chars().peekable();
-    loop {
-        match chars.next()? {
-            '"' => break,
-            '\\' => { chars.next(); } // skip escaped char
-            c => result.push(c),
-        }
-    }
-    Some(result)
-}
-
-fn truncate_arg(s: &str, max: usize) -> String {
-    let chars: Vec<char> = s.chars().collect();
-    if chars.len() <= max {
-        s.to_string()
-    } else {
-        chars[..max].iter().collect()
-    }
+    let end = line[start..].find('"')? + start;
+    Some(line[start..end].to_string())
 }
 
 fn determine_status(path: &Path, input_tokens: u64, output_tokens: u64) -> (SessionStatus, Option<String>) {
@@ -875,15 +825,15 @@ mod tests {
         // We'll add extract_tool_action() as a pub(crate) fn for testability.
         assert_eq!(
             extract_tool_action(r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"src/main.rs"}}]}}"#),
-            Some("Edit \u{2026}/main.rs".to_string())
+            Some("Edit".to_string())
         );
         assert_eq!(
             extract_tool_action(r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"cargo test --release"}}]}}"#),
-            Some("Bash: cargo test --rele".to_string())
+            Some("Bash".to_string())
         );
         assert_eq!(
             extract_tool_action(r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Grep","input":{"pattern":"fn pet_type"}}]}}"#),
-            Some("Grep: fn pet_type".to_string())
+            Some("Grep".to_string())
         );
         assert_eq!(
             extract_tool_action(r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Agent","input":{}}]}}"#),

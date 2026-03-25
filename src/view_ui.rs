@@ -435,11 +435,25 @@ fn status_color(status: &SessionStatus) -> Color {
     }
 }
 
+fn tool_verb(tool: &str) -> &'static str {
+    match tool {
+        "Edit" | "MultiEdit" | "NotebookEdit" => "Editing",
+        "Write" => "Writing",
+        "Read" => "Reading",
+        "Bash" => "Running",
+        "Grep" | "Glob" | "WebSearch" => "Searching",
+        "WebFetch" => "Browsing",
+        "Agent" => "Delegating",
+        "TodoWrite" | "TodoRead" => "Planning",
+        _ => "Working",
+    }
+}
+
 fn action_or_label(session: &Session) -> String {
     match session.status {
         SessionStatus::Working | SessionStatus::Input => {
-            if let Some(ref action) = session.last_action {
-                return action.clone();
+            if let Some(ref tool) = session.last_action {
+                return tool_verb(tool).to_string();
             }
             session.status.label().to_string()
         }
@@ -680,10 +694,9 @@ mod tests {
 
     #[test]
     fn status_label_shows_action_when_working_with_action() {
-        // When Working + last_action present, show action
         let mut s = make_session("/a", SessionStatus::Working, Some("2026-03-24T10:00:00Z"));
-        s.last_action = Some("Edit main.rs".to_string());
-        assert_eq!(action_or_label(&s), "Edit main.rs");
+        s.last_action = Some("Edit".to_string());
+        assert_eq!(action_or_label(&s), "Editing");
     }
 
     #[test]
@@ -696,7 +709,7 @@ mod tests {
     fn status_label_shows_idle_label_even_with_action() {
         // Idle sessions never show action
         let mut s = make_session("/a", SessionStatus::Idle, Some("2026-03-24T10:00:00Z"));
-        s.last_action = Some("Edit main.rs".to_string());
+        s.last_action = Some("Edit".to_string());
         assert_eq!(action_or_label(&s), "Idle");
     }
 
@@ -704,15 +717,15 @@ mod tests {
     fn status_label_shows_new_label_even_with_action() {
         // New sessions never show action
         let mut s = make_session("/a", SessionStatus::New, None);
-        s.last_action = Some("Edit main.rs".to_string());
+        s.last_action = Some("Edit".to_string());
         assert_eq!(action_or_label(&s), "New");
     }
 
     #[test]
     fn status_label_shows_action_when_input_with_action() {
         let mut s = make_session("/a", SessionStatus::Input, Some("2026-03-24T10:00:00Z"));
-        s.last_action = Some("Read file.rs".to_string());
-        assert_eq!(action_or_label(&s), "Read file.rs");
+        s.last_action = Some("Read".to_string());
+        assert_eq!(action_or_label(&s), "Reading");
     }
 
     #[test]

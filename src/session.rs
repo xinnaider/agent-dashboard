@@ -44,6 +44,7 @@ pub struct Session {
     pub effort: Option<String>,
     pub last_activity: Option<String>,
     pub last_action: Option<String>,
+    pub last_bash_lines: Option<Vec<String>>,
     pub started_at: u64,
     pub last_file_size: u64,
 }
@@ -527,14 +528,66 @@ pub(crate) fn extract_tool_action(line: &str) -> Option<String> {
     Some(line[start..end].to_string())
 }
 
-fn determine_status(path: &Path, input_tokens: u64, output_tokens: u64) -> (SessionStatus, Option<String>) {
+pub(crate) fn extract_tool_id(line: &str) -> Option<String> {
+    let marker = "\"id\":\"";
+    let start = line.find(marker)? + marker.len();
+    let end = line[start..].find('"')? + start;
+    Some(line[start..end].to_string())
+}
+
+fn extract_json_string(haystack: &str, marker: &str) -> Option<String> {
+    let start = haystack.find(marker)? + marker.len();
+    let rest = &haystack[start..];
+    let mut result = String::new();
+    let mut chars = rest.chars();
+    loop {
+        match chars.next()? {
+            '"' => break,
+            '\\' => {
+                match chars.next()? {
+                    'n' => result.push('\n'),
+                    't' => result.push('\t'),
+                    c => result.push(c),
+                }
+            }
+            c => result.push(c),
+        }
+    }
+    Some(result)
+}
+
+pub(crate) fn extract_bash_lines(line: &str, bash_id: &str) -> Option<Vec<String>> {
+    if !line.contains("\"tool_result\"") {
+        return None;
+    }
+    if !bash_id.is_empty() && !line.contains(bash_id) {
+        return None;
+    }
+    let tr_pos = line.find("\"tool_result\"")?;
+    let from_tr = &line[tr_pos..];
+    // Try string content first ("content":"..."), then array text ("text":"...")
+    let content = extract_json_string(from_tr, "\"content\":\"")
+        .or_else(|| extract_json_string(from_tr, "\"text\":\""))?;
+    let lines: Vec<String> = content
+        .lines()
+        .map(|l| l.trim_end().to_string())
+        .filter(|l| !l.is_empty())
+        .collect();
+    if lines.is_empty() {
+        return None;
+    }
+    let start = lines.len().saturating_sub(20);
+    Some(lines[start..].to_vec())
+}
+
+fn determine_status(path: &Path, input_tokens: u64, output_tokens: u64) -> (SessionStatus, Option<String>, Option<Vec<String>>) {
     if input_tokens == 0 && output_tokens == 0 {
-        return (SessionStatus::New, None);
+        return (SessionStatus::New, None, None);
     }
 
     let file = match fs::File::open(path) {
         Ok(f) => f,
-        Err(_) => return (SessionStatus::Idle, None),
+        Err(_) => return (SessionStatus::Idle, None, None),
     };
 
     let file_size = file.metadata().map(|m| m.len()).unwrap_or(0);
@@ -547,6 +600,8 @@ fn determine_status(path: &Path, input_tokens: u64, output_tokens: u64) -> (Sess
     let mut last_timestamp = String::new();
     let mut has_tool_use_permission = false;
     let mut last_action: Option<String> = None;
+    let mut last_bash_id = String::new();
+    let mut last_bash_lines: Option<Vec<String>> = None;
 
     let mut line = String::new();
     loop {
@@ -575,6 +630,15 @@ fn determine_status(path: &Path, input_tokens: u64, output_tokens: u64) -> (Sess
 
         if trimmed.contains("\"type\":\"tool_use\"") {
             last_action = extract_tool_action(trimmed);
+            if last_action.as_deref() == Some("Bash") {
+                last_bash_id = extract_tool_id(trimmed).unwrap_or_default();
+            }
+        }
+
+        if !last_bash_id.is_empty() {
+            if let Some(bash_lines) = extract_bash_lines(trimmed, &last_bash_id) {
+                last_bash_lines = Some(bash_lines);
+            }
         }
 
         if let Some(ts_start) = trimmed.find("\"timestamp\":\"") {
@@ -586,23 +650,23 @@ fn determine_status(path: &Path, input_tokens: u64, output_tokens: u64) -> (Sess
     }
 
     if last_type == "assistant" && has_tool_use_permission {
-        return (SessionStatus::Input, last_action);
+        return (SessionStatus::Input, last_action, last_bash_lines);
     }
 
     if !last_timestamp.is_empty() {
         if let Ok(dt) = last_timestamp.parse::<chrono::DateTime<chrono::Utc>>() {
             let elapsed = chrono::Utc::now() - dt;
             if elapsed.num_seconds() < 30 {
-                return (SessionStatus::Working, last_action.clone());
+                return (SessionStatus::Working, last_action.clone(), last_bash_lines.clone());
             }
         }
     }
 
     if last_type == "progress" {
-        return (SessionStatus::Working, last_action.clone());
+        return (SessionStatus::Working, last_action.clone(), last_bash_lines.clone());
     }
 
-    (SessionStatus::Idle, last_action)
+    (SessionStatus::Idle, last_action, last_bash_lines)
 }
 
 fn truncate_to_minute(ts: &Option<String>) -> Option<String> {
@@ -682,7 +746,7 @@ pub fn discover_sessions(prev_sessions: &HashMap<String, Session>) -> Vec<Sessio
                 .unwrap_or_else(|| decode_project_path(&project_dir));
             let (project_name, relative_dir, branch) = git_project_info(&cwd);
 
-            let (status, last_action) = determine_status(&path, info.input_tokens, info.output_tokens);
+            let (status, last_action, last_bash_lines) = determine_status(&path, info.input_tokens, info.output_tokens);
 
             matched_session_ids.insert(session_id.clone());
 
@@ -700,6 +764,7 @@ pub fn discover_sessions(prev_sessions: &HashMap<String, Session>) -> Vec<Sessio
                 pid: Some(live.pid),
                 last_activity: info.last_activity,
                 last_action,
+                last_bash_lines,
                 started_at: live.started_at,
                 last_file_size: info.file_size,
             });
@@ -743,6 +808,7 @@ mod tests {
             pid: None,
             last_activity: None,
             last_action: None,
+            last_bash_lines: None,
             started_at: 0,
             last_file_size: 0,
         };
@@ -765,6 +831,7 @@ mod tests {
             pid: None,
             last_activity: None,
             last_action: None,
+            last_bash_lines: None,
             started_at: 0,
             last_file_size: 0,
         };
@@ -861,6 +928,7 @@ mod tests {
             pid: None,
             last_activity: None,
             last_action: None,
+            last_bash_lines: None,
             started_at: 0,
             last_file_size: 0,
         };
@@ -868,5 +936,39 @@ mod tests {
 
         session.relative_dir = None;
         assert_eq!(session.room_id(), "myapp");
+    }
+
+    #[test]
+    fn extract_tool_id_finds_id_in_bash_tool_use() {
+        let line = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_01xyz","name":"Bash","input":{"command":"cargo test"}}]}}"#;
+        assert_eq!(extract_tool_id(line), Some("toolu_01xyz".to_string()));
+    }
+
+    #[test]
+    fn extract_tool_id_returns_none_without_id() {
+        let line = r#"{"type":"user","message":{}}"#;
+        assert_eq!(extract_tool_id(line), None);
+    }
+
+    #[test]
+    fn extract_bash_lines_parses_string_content() {
+        let line = r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_01abc","content":"running 5 tests\ntest result: ok"}]}}"#;
+        let result = extract_bash_lines(line, "toolu_01abc");
+        assert!(result.is_some());
+        let lines = result.unwrap();
+        assert!(lines.contains(&"running 5 tests".to_string()));
+        assert!(lines.contains(&"test result: ok".to_string()));
+    }
+
+    #[test]
+    fn extract_bash_lines_returns_none_for_wrong_id() {
+        let line = r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_01abc","content":"some output\n"}]}}"#;
+        assert!(extract_bash_lines(line, "toolu_WRONG").is_none());
+    }
+
+    #[test]
+    fn extract_bash_lines_returns_none_for_non_tool_result() {
+        let line = r#"{"type":"assistant","message":{"content":"hello"}}"#;
+        assert!(extract_bash_lines(line, "").is_none());
     }
 }

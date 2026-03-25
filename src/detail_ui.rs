@@ -100,7 +100,7 @@ fn render_block(frame: &mut Frame, session: &Session, area: Rect, is_selected: b
         let action = action_or_label(session);
         let action_len = action.chars().count();
         let activity_len = activity.chars().count();
-        let combined = action_len + activity_len + 2; // 2 for leading space and gap
+        let combined = action_len + activity_len + 1; // 1 for the leading space
         let padding = if combined < w { " ".repeat(w - combined) } else { String::new() };
         lines.push(Line::from(vec![
             Span::styled(format!(" {action}"), Style::default().fg(action_color)),

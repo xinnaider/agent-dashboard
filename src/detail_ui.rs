@@ -41,7 +41,7 @@ fn render_grid(frame: &mut Frame, app: &App, area: Rect) {
     let visible = ((area.height / BLOCK_H) as usize).max(1);
 
     // Scroll to keep selected visible
-    let scroll = if selected + 1 > visible { selected + 1 - visible } else { 0 };
+    let scroll = (selected + 1).saturating_sub(visible);
 
     let mut y = area.y;
     for (i, session) in app.sessions.iter().enumerate().skip(scroll) {

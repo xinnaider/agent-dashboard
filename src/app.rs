@@ -8,6 +8,7 @@ use crate::session::{self, Session, SessionStatus};
 pub enum ViewMode {
     Table,
     View,
+    Detail,
 }
 
 pub struct App {
@@ -20,6 +21,9 @@ pub struct App {
     pub view_zoomed_room: Option<String>,
     pub view_zoom_index: Option<usize>,
     pub view_selected_agent: usize,
+    pub detail_selected: usize,
+    pub detail_scroll: usize,
+    pub detail_expanded: Option<usize>,
     prev_sessions: HashMap<String, Session>,
 }
 
@@ -41,6 +45,9 @@ impl App {
             view_zoomed_room: None,
             view_zoom_index: None,
             view_selected_agent: 0,
+            detail_selected: 0,
+            detail_scroll: 0,
+            detail_expanded: None,
             prev_sessions: HashMap::new(),
         }
     }
@@ -71,6 +78,9 @@ impl App {
         if self.selected >= self.sessions.len() && !self.sessions.is_empty() {
             self.selected = self.sessions.len() - 1;
         }
+        if self.detail_selected >= self.sessions.len() && !self.sessions.is_empty() {
+            self.detail_selected = self.sessions.len() - 1;
+        }
     }
 
     pub fn advance_tick(&mut self) {
@@ -81,6 +91,7 @@ impl App {
         match self.view_mode {
             ViewMode::Table => self.handle_key_table(key),
             ViewMode::View => self.handle_key_view(key),
+            ViewMode::Detail => self.handle_key_detail(key),
         }
     }
 
@@ -101,6 +112,7 @@ impl App {
             KeyCode::Char('r') => {
                 self.refresh();
             }
+            KeyCode::Char('d') => self.view_mode = ViewMode::Detail,
             _ => {}
         }
     }
@@ -135,6 +147,11 @@ impl App {
                 self.view_selected_agent = 0;
                 self.view_mode = ViewMode::Table;
             }
+            KeyCode::Char('d') => {
+                self.view_zoomed_room = None;
+                self.view_selected_agent = 0;
+                self.view_mode = ViewMode::Detail;
+            }
             KeyCode::Char('j') | KeyCode::Down => {
                 self.view_page = self.view_page.saturating_add(1);
             }
@@ -145,6 +162,55 @@ impl App {
                 let idx = (c as usize) - ('1' as usize);
                 self.view_zoom_index = Some(idx);
                 self.view_selected_agent = 0;
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_key_detail(&mut self, key: KeyEvent) {
+        if self.detail_expanded.is_some() {
+            match key.code {
+                KeyCode::Char('j') | KeyCode::Down => {
+                    self.detail_scroll = self.detail_scroll.saturating_add(1);
+                }
+                KeyCode::Char('k') | KeyCode::Up => {
+                    self.detail_scroll = self.detail_scroll.saturating_sub(1);
+                }
+                KeyCode::Esc => {
+                    self.detail_expanded = None;
+                    self.detail_scroll = 0;
+                }
+                KeyCode::Char('q') => self.should_quit = true,
+                _ => {}
+            }
+            return;
+        }
+        match key.code {
+            KeyCode::Char('q') | KeyCode::Esc => self.should_quit = true,
+            KeyCode::Char('j') | KeyCode::Down => {
+                if !self.sessions.is_empty() {
+                    self.detail_selected =
+                        (self.detail_selected + 1).min(self.sessions.len() - 1);
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.detail_selected = self.detail_selected.saturating_sub(1);
+            }
+            KeyCode::Enter => {
+                if !self.sessions.is_empty() {
+                    self.detail_expanded =
+                        Some(self.detail_selected.min(self.sessions.len() - 1));
+                }
+            }
+            KeyCode::Char('d') | KeyCode::Char('t') => {
+                self.detail_expanded = None;
+                self.detail_scroll = 0;
+                self.view_mode = ViewMode::Table;
+            }
+            KeyCode::Char('v') => {
+                self.detail_expanded = None;
+                self.detail_scroll = 0;
+                self.view_mode = ViewMode::View;
             }
             _ => {}
         }
@@ -182,5 +248,79 @@ impl App {
             "sessions": sessions,
         }))
         .unwrap_or_else(|_| "{}".to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
+
+    fn press(code: KeyCode) -> KeyEvent {
+        KeyEvent {
+            code,
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::NONE,
+        }
+    }
+
+    #[test]
+    fn handle_key_detail_j_increments_selected_when_sessions_present() {
+        let mut app = App::new();
+        app.view_mode = ViewMode::Detail;
+        use crate::session::{Session, SessionStatus};
+        for _ in 0..3 {
+            app.sessions.push(Session {
+                session_id: "x".to_string(),
+                project_name: "p".to_string(),
+                branch: None,
+                cwd: "/".to_string(),
+                relative_dir: None,
+                model: None,
+                effort: None,
+                total_input_tokens: 0,
+                total_output_tokens: 0,
+                status: SessionStatus::Idle,
+                pid: None,
+                last_activity: None,
+                last_action: None,
+                last_bash_lines: None,
+                started_at: 0,
+                last_file_size: 0,
+            });
+        }
+        app.handle_key(press(KeyCode::Char('j')));
+        assert_eq!(app.detail_selected, 1);
+        app.handle_key(press(KeyCode::Char('j')));
+        assert_eq!(app.detail_selected, 2);
+        // Can't go past last
+        app.handle_key(press(KeyCode::Char('j')));
+        assert_eq!(app.detail_selected, 2);
+    }
+
+    #[test]
+    fn handle_key_detail_k_decrements_selected() {
+        let mut app = App::new();
+        app.view_mode = ViewMode::Detail;
+        app.detail_selected = 2;
+        app.handle_key(press(KeyCode::Char('k')));
+        assert_eq!(app.detail_selected, 1);
+        app.handle_key(press(KeyCode::Char('k')));
+        assert_eq!(app.detail_selected, 0);
+        // Can't go below 0
+        app.handle_key(press(KeyCode::Char('k')));
+        assert_eq!(app.detail_selected, 0);
+    }
+
+    #[test]
+    fn handle_key_detail_expanded_esc_collapses() {
+        let mut app = App::new();
+        app.view_mode = ViewMode::Detail;
+        app.detail_expanded = Some(0);
+        app.detail_scroll = 5;
+        app.handle_key(press(KeyCode::Esc));
+        assert!(app.detail_expanded.is_none());
+        assert_eq!(app.detail_scroll, 0);
     }
 }

@@ -80,7 +80,7 @@ fn run_app(
         terminal.draw(|f| match app.view_mode {
             ViewMode::Table => ui::render(f, &app),
             ViewMode::View => view_ui::render(f, &app),
-            ViewMode::Detail => ui::render(f, &app),
+            ViewMode::Detail => ui::render(f, &app), // TODO: replace with detail_ui::render in Task 3
         })?;
 
         app.advance_tick();

@@ -4,7 +4,7 @@ use crossterm::event::{KeyCode, KeyEvent};
 
 use crate::session::{self, Session, SessionStatus};
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 pub enum ViewMode {
     Table,
     View,
@@ -145,11 +145,13 @@ impl App {
             KeyCode::Char('v') => {
                 self.view_zoomed_room = None;
                 self.view_selected_agent = 0;
+                self.view_zoom_index = None;
                 self.view_mode = ViewMode::Table;
             }
             KeyCode::Char('d') => {
                 self.view_zoomed_room = None;
                 self.view_selected_agent = 0;
+                self.view_zoom_index = None;
                 self.view_mode = ViewMode::Detail;
             }
             KeyCode::Char('j') | KeyCode::Down => {
@@ -181,6 +183,16 @@ impl App {
                     self.detail_scroll = 0;
                 }
                 KeyCode::Char('q') => self.should_quit = true,
+                KeyCode::Char('d') | KeyCode::Char('t') => {
+                    self.detail_expanded = None;
+                    self.detail_scroll = 0;
+                    self.view_mode = ViewMode::Table;
+                }
+                KeyCode::Char('v') => {
+                    self.detail_expanded = None;
+                    self.detail_scroll = 0;
+                    self.view_mode = ViewMode::View;
+                }
                 _ => {}
             }
             return;
@@ -320,6 +332,46 @@ mod tests {
         app.detail_expanded = Some(0);
         app.detail_scroll = 5;
         app.handle_key(press(KeyCode::Esc));
+        assert!(app.detail_expanded.is_none());
+        assert_eq!(app.detail_scroll, 0);
+    }
+
+    #[test]
+    fn handle_key_detail_enter_expands_selected() {
+        let mut app = App::new();
+        app.view_mode = ViewMode::Detail;
+        use crate::session::{Session, SessionStatus};
+        app.sessions.push(Session {
+            session_id: "x".to_string(),
+            project_name: "p".to_string(),
+            branch: None,
+            cwd: "/".to_string(),
+            relative_dir: None,
+            model: None,
+            effort: None,
+            total_input_tokens: 0,
+            total_output_tokens: 0,
+            status: SessionStatus::Idle,
+            pid: None,
+            last_activity: None,
+            last_action: None,
+            last_bash_lines: None,
+            started_at: 0,
+            last_file_size: 0,
+        });
+        app.detail_selected = 0;
+        app.handle_key(press(KeyCode::Enter));
+        assert_eq!(app.detail_expanded, Some(0));
+    }
+
+    #[test]
+    fn handle_key_detail_d_returns_to_table() {
+        let mut app = App::new();
+        app.view_mode = ViewMode::Detail;
+        app.detail_expanded = Some(0);
+        app.detail_scroll = 3;
+        app.handle_key(press(KeyCode::Char('d')));
+        assert_eq!(app.view_mode, ViewMode::Table);
         assert!(app.detail_expanded.is_none());
         assert_eq!(app.detail_scroll, 0);
     }

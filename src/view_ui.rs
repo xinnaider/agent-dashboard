@@ -687,6 +687,13 @@ mod tests {
     }
 
     #[test]
+    fn status_label_shows_action_when_input_with_action() {
+        let mut s = make_session("/a", SessionStatus::Input, Some("2026-03-24T10:00:00Z"));
+        s.last_action = Some("Read file.rs".to_string());
+        assert_eq!(action_or_label(&s), "Read file.rs");
+    }
+
+    #[test]
     fn rooms_with_input_sort_first() {
         let sessions = vec![
             make_session("/a", SessionStatus::Idle, Some("2026-03-16T10:00:00Z")),

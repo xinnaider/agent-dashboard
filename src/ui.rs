@@ -22,7 +22,7 @@ fn render_table(frame: &mut Frame, app: &App, area: Rect) {
         Cell::from(" # "),
         Cell::from("PID"),
         Cell::from("Project"),
-        Cell::from("Directory"),
+        Cell::from("Branch"),
         Cell::from("Status"),
         Cell::from("Model"),
         Cell::from("Context"),
@@ -63,27 +63,23 @@ fn render_table(frame: &mut Frame, app: &App, area: Rect) {
                 .map(format_timestamp)
                 .unwrap_or_else(|| "\u{2014}".to_string());
 
-            let cwd_display = shorten_home(&session.cwd);
-
             let project_cell = {
                 let mut spans = vec![Span::raw(&session.project_name)];
                 if let Some(dir) = &session.relative_dir {
                     spans.push(Span::styled("::", Style::default().fg(Color::DarkGray)));
                     spans.push(Span::styled(dir.clone(), Style::default().fg(Color::Cyan)));
                 }
-                if let Some(b) = &session.branch {
-                    spans.push(Span::styled("::", Style::default().fg(Color::DarkGray)));
-                    spans.push(Span::styled(b, Style::default().fg(Color::Green)));
-                }
                 Cell::from(Line::from(spans))
             };
+
+            let branch_cell = Cell::from(
+                session.branch.as_deref().unwrap_or("\u{2014}"),
+            ).style(Style::default().fg(Color::Green));
 
             let status_cell = Cell::from(Line::from(vec![
                 Span::styled(status_dot, Style::default().fg(status_color)),
                 Span::styled(format!(" {status_label}"), Style::default().fg(status_color)),
             ]));
-
-            let dir_cell = Cell::from(cwd_display).style(Style::default().fg(Color::DarkGray));
 
             let pid_str = session
                 .pid
@@ -94,7 +90,7 @@ fn render_table(frame: &mut Frame, app: &App, area: Rect) {
                 Cell::from(num),
                 Cell::from(pid_str),
                 project_cell,
-                dir_cell,
+                branch_cell,
                 status_cell,
                 Cell::from(session.model_display()),
                 Cell::from(session.token_display()).style(token_style),
@@ -114,8 +110,8 @@ fn render_table(frame: &mut Frame, app: &App, area: Rect) {
     let widths = [
         Constraint::Length(4),
         Constraint::Length(8),
-        Constraint::Fill(1),
         Constraint::Fill(2),
+        Constraint::Fill(1),
         Constraint::Length(10),
         Constraint::Length(20),
         Constraint::Length(14),
@@ -153,17 +149,6 @@ fn render_footer(frame: &mut Frame, area: Rect) {
         Span::raw(" quit"),
     ]));
     frame.render_widget(footer, area);
-}
-
-fn shorten_home(path: &str) -> String {
-    let normalized = path.replace('\\', "/");
-    if let Some(home) = dirs::home_dir() {
-        let home_str = home.to_string_lossy().replace('\\', "/");
-        if let Some(rest) = normalized.strip_prefix(home_str.as_str()) {
-            return format!("~{rest}");
-        }
-    }
-    normalized
 }
 
 fn format_timestamp(ts: &str) -> String {

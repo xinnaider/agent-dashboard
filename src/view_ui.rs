@@ -426,7 +426,7 @@ fn pet_type(session_id: &str) -> usize {
     session_id.bytes().fold(0u64, |a, b| a.wrapping_add(b as u64)) as usize % 6
 }
 
-fn status_color(status: &SessionStatus) -> Color {
+pub(crate) fn status_color(status: &SessionStatus) -> Color {
     match status {
         SessionStatus::New => Color::Blue,
         SessionStatus::Working => Color::Green,
@@ -449,7 +449,7 @@ fn tool_verb(tool: &str) -> &'static str {
     }
 }
 
-fn action_or_label(session: &Session) -> String {
+pub(crate) fn action_or_label(session: &Session) -> String {
     match session.status {
         SessionStatus::Working | SessionStatus::Input => {
             if let Some(ref tool) = session.last_action {
@@ -656,7 +656,7 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(footer, area);
 }
 
-fn truncate_str(s: &str, max_width: usize) -> String {
+pub(crate) fn truncate_str(s: &str, max_width: usize) -> String {
     let char_count = s.chars().count();
     if char_count <= max_width {
         s.to_string()

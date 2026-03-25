@@ -151,7 +151,7 @@ fn render_footer(frame: &mut Frame, area: Rect) {
     frame.render_widget(footer, area);
 }
 
-fn format_timestamp(ts: &str) -> String {
+pub(crate) fn format_timestamp(ts: &str) -> String {
     use chrono::{DateTime, Local, Utc};
 
     match ts.parse::<DateTime<Utc>>() {
